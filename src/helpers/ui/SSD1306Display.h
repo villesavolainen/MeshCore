@@ -15,6 +15,22 @@
   #define DISPLAY_ADDRESS   0x3C
 #endif
 
+#ifndef DISPLAY_WIDTH
+  #ifdef SCREEN_WIDTH
+    #define DISPLAY_WIDTH SCREEN_WIDTH
+  #else
+    #define DISPLAY_WIDTH 128
+  #endif
+#endif
+
+#ifndef DISPLAY_HEIGHT
+  #ifdef SCREEN_HEIGHT
+    #define DISPLAY_HEIGHT SCREEN_HEIGHT
+  #else
+    #define DISPLAY_HEIGHT 64
+  #endif
+#endif
+
 class SSD1306Display : public DisplayDriver {
   Adafruit_SSD1306 display;
   bool _isOn;
@@ -23,8 +39,8 @@ class SSD1306Display : public DisplayDriver {
 
   bool i2c_probe(TwoWire& wire, uint8_t addr);
 public:
-  SSD1306Display(RefCountedDigitalPin* peripher_power=NULL) : DisplayDriver(128, 64), 
-      display(128, 64, &Wire, PIN_OLED_RESET),
+  SSD1306Display(RefCountedDigitalPin* peripher_power=NULL) : DisplayDriver(DISPLAY_WIDTH, DISPLAY_HEIGHT), 
+      display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, PIN_OLED_RESET),
       _peripher_power(peripher_power)
   {
     _isOn = false; 

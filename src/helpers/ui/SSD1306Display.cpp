@@ -14,7 +14,21 @@ bool SSD1306Display::begin() {
   #ifdef DISPLAY_ROTATION
   display.setRotation(DISPLAY_ROTATION);
   #endif
-  return display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS, true, false) && i2c_probe(Wire, DISPLAY_ADDRESS);
+  bool ok = display.begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS, true, false) && i2c_probe(Wire, DISPLAY_ADDRESS);
+  if (!ok) {
+    return false;
+  }
+
+  #ifdef SSD1306_DISPLAY_OFFSET
+    display.ssd1306_command(SSD1306_SETDISPLAYOFFSET);
+    display.ssd1306_command(SSD1306_DISPLAY_OFFSET & 0x3F);
+  #endif
+
+  #ifdef SSD1306_START_LINE
+    display.ssd1306_command(SSD1306_SETSTARTLINE | (SSD1306_START_LINE & 0x3F));
+  #endif
+
+  return true;
 }
 
 void SSD1306Display::turnOn() {
@@ -53,6 +67,7 @@ void SSD1306Display::startFrame(Color bkg) {
 }
 
 void SSD1306Display::setTextSize(int sz) {
+  display.setFont();
   display.setTextSize(sz);
 }
 
