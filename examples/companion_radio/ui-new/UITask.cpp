@@ -52,6 +52,22 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+    #ifdef HELTEC_WIRELESS_STICK_V21
+      display.setTextSize(1);
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 8, "MeshCore");
+      display.drawTextCentered(display.width() / 2, 20, _version_info);
+      return 250;
+    #endif
+
+    if (display.width() <= 64 || display.height() <= 32) {
+      display.setTextSize(1);
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 8, "MeshCore");
+      display.drawTextCentered(display.width() / 2, 20, _version_info);
+      return 250;
+    }
+
     // meshcore logo
     display.setColor(DisplayDriver::BLUE);
     int logoWidth = 128;
@@ -76,6 +92,16 @@ public:
 };
 
 class HomeScreen : public UIScreen {
+  #ifdef HELTEC_WIRELESS_STICK_V21
+  enum V21Page {
+    V21_PIN,
+    V21_HOME,
+    V21_RADIO,
+    V21_STATUS,
+    V21_COUNT
+  };
+  #endif
+
   enum HomePage {
     FIRST,
     RECENT,
@@ -97,8 +123,116 @@ class HomeScreen : public UIScreen {
   SensorManager* _sensors;
   NodePrefs* _node_prefs;
   uint8_t _page;
+  #ifdef HELTEC_WIRELESS_STICK_V21
+  uint8_t _v21_page;
+  #endif
   bool _shutdown_init;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
+
+  bool isCompactDisplay(DisplayDriver& display) const {
+    return display.width() <= 64 || display.height() <= 32;
+  }
+
+  void drawCompactLine(DisplayDriver& display, int y, const char* text) {
+    int text_width = display.getTextWidth(text);
+    if (text_width <= display.width()) {
+      display.drawTextCentered(display.width() / 2, y, text);
+      return;
+    }
+
+    int spacer = display.getTextWidth("   ");
+    int cycle_width = text_width + spacer + display.width();
+    int px = (millis() / 130) % cycle_width;
+    int x = display.width() - px;
+
+    display.setCursor(x, y);
+    display.print(text);
+    display.setCursor(x + text_width + spacer, y);
+    display.print(text);
+  }
+
+  int renderCompactPage(DisplayDriver& display) {
+    #ifdef HELTEC_WIRELESS_STICK_V21
+      const int header_y = 2;
+      const int body_y = 12;
+      const int footer_y = 22;
+
+      char line[96];
+      switch (_v21_page) {
+        case V21_PIN:
+          display.setTextSize(1);
+          drawCompactLine(display, header_y, "PIN");
+          display.setTextSize(1);
+          snprintf(line, sizeof(line), "%06u", (unsigned)the_mesh.getBLEPin());
+          drawCompactLine(display, body_y, line);
+          drawCompactLine(display, footer_y, "PRG NEXT");
+          break;
+
+        case V21_HOME: {
+          display.setTextSize(1);
+          drawCompactLine(display, header_y, "NODE");
+          display.setTextSize(1);
+          char filtered_name[sizeof(_node_prefs->node_name)];
+          display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
+          drawCompactLine(display, body_y, filtered_name);
+
+          drawCompactLine(display, footer_y, "PRG NEXT");
+          break;
+        }
+
+        case V21_RADIO:
+          display.setTextSize(1);
+          drawCompactLine(display, header_y, "RADIO");
+          display.setTextSize(1);
+          snprintf(line, sizeof(line), "FQ %06.3f", _node_prefs->freq);
+          drawCompactLine(display, body_y, line);
+          snprintf(line, sizeof(line), "S%d B%.1f", _node_prefs->sf, _node_prefs->bw);
+          drawCompactLine(display, footer_y, line);
+          break;
+
+        case V21_STATUS:
+          display.setTextSize(1);
+          drawCompactLine(display, header_y, "STATUS");
+          display.setTextSize(1);
+          drawCompactLine(display, body_y, _task->hasConnection() ? "CONNECTED" : "WAITING");
+          snprintf(line, sizeof(line), "MSG %d", _task->getMsgCount());
+          drawCompactLine(display, footer_y, line);
+          break;
+      }
+
+      return 500;
+    #endif
+
+    char generic_line[96];
+    display.setTextSize(1);
+    display.setColor(DisplayDriver::GREEN);
+
+    char filtered_name[sizeof(_node_prefs->node_name)];
+    display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
+    display.setCursor(0, 0);
+    display.print(filtered_name);
+
+    display.setColor(DisplayDriver::YELLOW);
+    display.setCursor(0, 8);
+    display.print("[HOME]");
+
+    display.setColor(DisplayDriver::RED);
+    display.setCursor(0, 18);
+
+    if (the_mesh.getBLEPin() != 0) {
+      snprintf(generic_line, sizeof(generic_line), "PIN %06u", (unsigned)the_mesh.getBLEPin());
+    } else if (_task->hasConnection()) {
+      display.setColor(DisplayDriver::GREEN);
+      snprintf(generic_line, sizeof(generic_line), "Connected");
+    } else {
+      display.setColor(DisplayDriver::LIGHT);
+      snprintf(generic_line, sizeof(generic_line), "Waiting");
+    }
+
+    display.drawTextCentered(display.width() / 2, 22, generic_line);
+
+    return 500;
+  }
 
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
@@ -171,7 +305,11 @@ class HomeScreen : public UIScreen {
 public:
   HomeScreen(UITask* task, mesh::RTCClock* rtc, SensorManager* sensors, NodePrefs* node_prefs)
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0), 
-       _shutdown_init(false), sensors_lpp(200) {  }
+       _shutdown_init(false), sensors_lpp(200) {
+    #ifdef HELTEC_WIRELESS_STICK_V21
+      _v21_page = V21_PIN;
+    #endif
+  }
 
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
@@ -181,6 +319,13 @@ public:
 
   int render(DisplayDriver& display) override {
     char tmp[80];
+    #ifdef HELTEC_WIRELESS_STICK_V21
+      return renderCompactPage(display);
+    #endif
+    if (isCompactDisplay(display)) {
+      return renderCompactPage(display);
+    }
+
     // node name
     display.setTextSize(1);
     display.setColor(DisplayDriver::GREEN);
@@ -204,9 +349,15 @@ public:
     }
 
     if (_page == HomePage::FIRST) {
+      bool compact_display = (display.width() <= 64 || display.height() <= 32);
+
       display.setColor(DisplayDriver::YELLOW);
-      display.setTextSize(2);
-      sprintf(tmp, "MSG: %d", _task->getMsgCount());
+      display.setTextSize(compact_display ? 1 : 2);
+      if (compact_display) {
+        sprintf(tmp, "Msg:%d", _task->getMsgCount());
+      } else {
+        sprintf(tmp, "MSG: %d", _task->getMsgCount());
+      }
       display.drawTextCentered(display.width() / 2, 20, tmp);
 
       #ifdef WIFI_SSID
@@ -215,16 +366,26 @@ public:
         display.setTextSize(1);
         display.drawTextCentered(display.width() / 2, 54, tmp); 
       #endif
-      if (_task->hasConnection()) {
+      if (compact_display && the_mesh.getBLEPin() != 0) {
+        display.setColor(DisplayDriver::RED);
+        display.setTextSize(1);
+        snprintf(tmp, sizeof(tmp), "PIN %06u", (unsigned)the_mesh.getBLEPin());
+        display.drawTextCentered(display.width() / 2, 29, tmp);
+
+      } else if (_task->hasConnection()) {
         display.setColor(DisplayDriver::GREEN);
         display.setTextSize(1);
-        display.drawTextCentered(display.width() / 2, 43, "< Connected >");
+        display.drawTextCentered(display.width() / 2, compact_display ? 29 : 43, compact_display ? "Connected" : "< Connected >");
 
       } else if (the_mesh.getBLEPin() != 0) { // BT pin
         display.setColor(DisplayDriver::RED);
-        display.setTextSize(2);
-        sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
-        display.drawTextCentered(display.width() / 2, 43, tmp);
+        display.setTextSize(compact_display ? 1 : 2);
+        if (compact_display) {
+          snprintf(tmp, sizeof(tmp), "PIN %06u", (unsigned)the_mesh.getBLEPin());
+        } else {
+          sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
+        }
+        display.drawTextCentered(display.width() / 2, compact_display ? 29 : 43, tmp);
       }
     } else if (_page == HomePage::RECENT) {
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
@@ -406,6 +567,21 @@ public:
   }
 
   bool handleInput(char c) override {
+    #ifdef HELTEC_WIRELESS_STICK_V21
+      if (c == KEY_SELECT || c == KEY_NEXT || c == KEY_RIGHT) {
+        _v21_page = (_v21_page + 1) % V21_COUNT;
+        return true;
+      }
+      if (c == KEY_LEFT || c == KEY_PREV) {
+        _v21_page = (_v21_page + V21_COUNT - 1) % V21_COUNT;
+        return true;
+      }
+      if (c == KEY_ENTER) {
+        _v21_page = (_v21_page + 1) % V21_COUNT;
+        return true;
+      }
+    #endif
+
     if (c == KEY_LEFT || c == KEY_PREV) {
       _page = (_page + HomePage::Count - 1) % HomePage::Count;
       return true;
@@ -576,10 +752,27 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   ui_started_at = millis();
   _alert_expiry = 0;
 
+  #ifdef HELTEC_WIRELESS_STICK_V21
+    splash = new SplashScreen(this);
+    home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
+    msg_preview = new MsgPreviewScreen(this, &rtc_clock);
+    setCurrScreen(home);
+    if (_display != NULL) {
+      _display->startFrame();
+      _display->setTextSize(1);
+      _display->setColor(DisplayDriver::LIGHT);
+      _display->drawTextCentered(_display->width() / 2, 8, "RUNTIME OK");
+      _display->drawTextCentered(_display->width() / 2, 20, "PRG CHANGES PAGE");
+      _display->endFrame();
+    }
+    _next_refresh = 0;
+    _auto_off = ULONG_MAX;
+  #else
   splash = new SplashScreen(this);
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   msg_preview = new MsgPreviewScreen(this, &rtc_clock);
   setCurrScreen(splash);
+  #endif
 }
 
 void UITask::showAlert(const char* text, int duration_millis) {
