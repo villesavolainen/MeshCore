@@ -122,41 +122,9 @@ void setup() {
     disp->drawTextCentered(disp->width() / 2, loading_y, "Loading...");
     disp->endFrame();
   }
-
-  auto show_boot_step = [&](const char* msg) {
-    if (disp == NULL) return;
-    disp->startFrame();
-    disp->setTextSize((disp->height() <= 32) ? 0 : 1);
-    disp->drawTextCentered(disp->width() / 2, (disp->height() <= 32) ? 12 : 20, "BOOT");
-    disp->drawTextCentered(disp->width() / 2, (disp->height() <= 32) ? 24 : 34, msg);
-    disp->endFrame();
-#ifdef HELTEC_WIRELESS_STICK_V21
-    delay(250);
-#endif
-  };
-
-  show_boot_step("S1 START");
 #endif
 
-  #ifdef DISPLAY_CLASS
-    show_boot_step("S2 RADIO");
-  #endif
-  if (!radio_init()) {
-#ifdef DISPLAY_CLASS
-    if (disp != NULL) {
-      disp->startFrame();
-      disp->setTextSize((disp->height() <= 32) ? 0 : 1);
-      disp->drawTextCentered(disp->width() / 2, (disp->height() <= 32) ? 14 : 22, "RADIO INIT");
-      disp->drawTextCentered(disp->width() / 2, (disp->height() <= 32) ? 24 : 34, "FAILED");
-      disp->endFrame();
-    }
-#endif
-    halt();
-  }
-
-  #ifdef DISPLAY_CLASS
-    show_boot_step("S3 RNG");
-  #endif
+  if (!radio_init()) { halt(); }
   fast_rng.begin(radio_get_rng_seed());
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
@@ -215,15 +183,8 @@ void setup() {
   #endif
     the_mesh.startInterface(serial_interface);
 #elif defined(ESP32)
-  #ifdef DISPLAY_CLASS
-    show_boot_step("S4 FS");
-  #endif
   SPIFFS.begin(true);
   store.begin();
-
-  #ifdef DISPLAY_CLASS
-    show_boot_step("S5 MESH");
-  #endif
   the_mesh.begin(
     #ifdef DISPLAY_CLASS
         disp != NULL
@@ -245,9 +206,6 @@ void setup() {
 #else
   serial_interface.begin(Serial);
 #endif
-  #ifdef DISPLAY_CLASS
-    show_boot_step("S6 IFACE");
-  #endif
   the_mesh.startInterface(serial_interface);
 #else
   #error "need to define filesystem"
@@ -255,16 +213,11 @@ void setup() {
 
   sensors.begin();
 
-#ifdef DISPLAY_CLASS
-  show_boot_step("S7 SENS");
-#endif
-
 #if ENV_INCLUDE_GPS == 1
   the_mesh.applyGpsPrefs();
 #endif
 
 #ifdef DISPLAY_CLASS
-  show_boot_step("S8 UI");
   ui_task.begin(disp, &sensors, the_mesh.getNodePrefs());  // still want to pass this in as dependency, as prefs might be moved
 #endif
 }

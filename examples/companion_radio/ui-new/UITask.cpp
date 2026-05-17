@@ -97,6 +97,7 @@ class HomeScreen : public UIScreen {
     V21_PIN,
     V21_HOME,
     V21_RADIO,
+    V21_RADIO_EXTRA,
     V21_STATUS,
     V21_COUNT
   };
@@ -190,12 +191,29 @@ class HomeScreen : public UIScreen {
           drawCompactLine(display, footer_y, line);
           break;
 
+        case V21_RADIO_EXTRA:
+          display.setTextSize(1);
+          drawCompactLine(display, header_y, "RF");
+          display.setTextSize(1);
+          snprintf(line, sizeof(line), "CR %d TX %d", _node_prefs->cr, _node_prefs->tx_power_dbm);
+          drawCompactLine(display, body_y, line);
+          snprintf(line, sizeof(line), "NF %d", radio_driver.getNoiseFloor());
+          drawCompactLine(display, footer_y, line);
+          break;
+
         case V21_STATUS:
+          uint16_t batt_mv;
+
           display.setTextSize(1);
           drawCompactLine(display, header_y, "STATUS");
           display.setTextSize(1);
           drawCompactLine(display, body_y, _task->hasConnection() ? "CONNECTED" : "WAITING");
-          snprintf(line, sizeof(line), "MSG %d", _task->getMsgCount());
+          batt_mv = _task->getBattMilliVolts();
+          if (batt_mv > 0) {
+            snprintf(line, sizeof(line), "M%d %.2fV", _task->getMsgCount(), batt_mv / 1000.0f);
+          } else {
+            snprintf(line, sizeof(line), "MSG %d", _task->getMsgCount());
+          }
           drawCompactLine(display, footer_y, line);
           break;
       }
@@ -753,19 +771,11 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   _alert_expiry = 0;
 
   #ifdef HELTEC_WIRELESS_STICK_V21
-    splash = new SplashScreen(this);
-    home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
-    msg_preview = new MsgPreviewScreen(this, &rtc_clock);
-    setCurrScreen(home);
-    if (_display != NULL) {
-      _display->startFrame();
-      _display->setTextSize(1);
-      _display->setColor(DisplayDriver::LIGHT);
-      _display->drawTextCentered(_display->width() / 2, 8, "RUNTIME OK");
-      _display->drawTextCentered(_display->width() / 2, 20, "PRG CHANGES PAGE");
-      _display->endFrame();
-    }
-    _next_refresh = 0;
+  splash = new SplashScreen(this);
+  home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
+  msg_preview = new MsgPreviewScreen(this, &rtc_clock);
+  setCurrScreen(splash);
+
     _auto_off = ULONG_MAX;
   #else
   splash = new SplashScreen(this);
