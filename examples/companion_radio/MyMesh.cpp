@@ -927,6 +927,9 @@ void MyMesh::begin(bool has_display) {
   _prefs.gps_interval = constrain(_prefs.gps_interval, 0, 86400);  // Max 24 hours
 
 #ifdef BLE_PIN_CODE // 123456 by default
+  #ifdef FORCE_STATIC_BLE_PIN
+    _active_ble_pin = BLE_PIN_CODE;
+  #else
   if (_prefs.ble_pin == 0) {
 #ifdef DISPLAY_CLASS
     if (has_display && BLE_PIN_CODE == 123456) {
@@ -941,6 +944,7 @@ void MyMesh::begin(bool has_display) {
   } else {
     _active_ble_pin = _prefs.ble_pin;
   }
+  #endif
 #else
   _active_ble_pin = 0;
 #endif

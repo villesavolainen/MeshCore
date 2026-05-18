@@ -1,0 +1,63 @@
+name: Build Heltec Wireless Stick V2.1 Fork Firmwares
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - heltec-wireless-stick-v2.1
+
+concurrency:
+  group: heltec-wireless-stick-v21-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build Firmware Binaries
+        run: |
+          mkdir -p out
+
+          for env_name in \
+            Heltec_wireless_stick_v21_companion_radio_ble \
+            Heltec_wireless_stick_v21_companion_radio_ble_staticpin; do
+            pio run -e "$env_name"
+            pio run -e "$env_name" -t mergebin
+            cp ".pio/build/$env_name/firmware.bin" "out/${env_name}.bin"
+            cp ".pio/build/$env_name/firmware-merged.bin" "out/${env_name}-merged.bin"
+          done
+
+      - name: Upload Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: heltec-wireless-stick-v21-firmwares
+          path: out
+
+      - name: Create Rolling Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: heltec-wireless-stick-v21-latest
+          target_commitish: ${{ github.sha }}
+          name: Heltec Wireless Stick V2.1 Fork Firmware
+          body: |
+            Automated fork build for `${{ github.ref_name }}`.
+
+            Commit: `${{ github.sha }}`
+
+            Included firmwares:
+            - `Heltec_wireless_stick_v21_companion_radio_ble`
+            - `Heltec_wireless_stick_v21_companion_radio_ble_staticpin`
+          prerelease: true
+          draft: false
+          overwrite_files: true
+          files: out/*
