@@ -49,9 +49,9 @@ jobs:
         run: |
           cat >> variants/heltec_v2/platformio.ini <<'EOF'
           [env:Heltec_v2_room_server_external_storage_ci]
-          extends = Heltec_v2_room_server
+          extends = env:Heltec_v2_room_server
           build_flags =
-            ${Heltec_v2_room_server.build_flags}
+            ${env:Heltec_v2_room_server.build_flags}
             -D USE_EXTERNAL_MCU_ROOM_STORAGE=1
             -D ROOM_STORAGE_UART=Serial2
             -D ROOM_STORAGE_UART_RX=5
