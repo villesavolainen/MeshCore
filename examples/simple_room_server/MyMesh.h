@@ -21,6 +21,9 @@
 #include <helpers/StatsFormatHelper.h>
 #include <helpers/ClientACL.h>
 #include <helpers/RegionMap.h>
+#include "ChatCommandParser.h"
+#include "RoomStorage.h"
+#include "ExternalMcuRoomStorage.h"
 #include <RTClib.h>
 #include <target.h>
 
@@ -76,6 +79,18 @@
   #define TXT_ACK_DELAY     200
 #endif
 
+#ifndef ROOM_RESEND_MAX_LIMIT
+  #define ROOM_RESEND_MAX_LIMIT 25
+#endif
+
+#ifndef ROOM_RESEND_COOLDOWN_MS
+  #define ROOM_RESEND_COOLDOWN_MS 8000
+#endif
+
+#ifndef ROOM_MAX_HISTORY_SEND_PER_LOOP
+  #define ROOM_MAX_HISTORY_SEND_PER_LOOP 2
+#endif
+
 #define FIRMWARE_ROLE "room_server"
 
 #define PACKET_LOG_FILE  "/packet_log"
@@ -83,9 +98,18 @@
 #define MAX_POST_TEXT_LEN    (160-9)
 
 struct PostInfo {
+  uint32_t post_id;
   mesh::Identity author;
   uint32_t post_timestamp;   // by OUR clock
   char text[MAX_POST_TEXT_LEN+1];
+};
+
+struct PendingHistoryItem {
+  bool is_post;
+  uint8_t client_idx;
+  uint32_t post_timestamp;
+  mesh::Identity author;
+  char text[MAX_POST_TEXT_LEN + 1];
 };
 
 class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
@@ -117,9 +141,30 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t pending_sf;
   uint8_t pending_cr;
   int  matching_peer_indexes[MAX_CLIENTS];
+  LocalRoomStorage _local_storage;
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  ExternalMcuRoomStorage _external_storage;
+#endif
+  PendingHistoryItem _history_tx_queue[64];
+  uint8_t _history_tx_head;
+  uint8_t _history_tx_tail;
+  unsigned long _command_cooldown_until[MAX_CLIENTS];
+  uint16_t _next_storage_seq;
 
   void addPost(ClientInfo* client, const char* postData);
   void pushPostToClient(ClientInfo* client, PostInfo& post);
+  void sendHistoryPostToClient(ClientInfo* client, const RoomPost& post, unsigned long delay_millis = 0);
+  void sendTextToClient(ClientInfo* client, const char* text, unsigned long delay_millis = 0);
+  bool enqueueHistoryText(uint8_t client_idx, const char* text);
+  bool enqueueHistoryPost(uint8_t client_idx, const RoomPost& post);
+  bool isCommandCooldownActive(uint8_t client_idx) const;
+  uint32_t getClientHash(const ClientInfo* client) const;
+  bool isServerTimeValid() const;
+  uint16_t nextStorageSeq();
+  bool submitHistoryQuery(uint8_t client_idx, const ParsedRoomCommand& cmd);
+  bool handleRoomCommand(ClientInfo* client, uint8_t client_idx, const char* text);
+  void processStorageResults(RoomStorage& storage, bool from_external);
+  void flushHistorySendQueue();
   uint8_t getUnsyncedCount(ClientInfo* client);
   bool processAck(const uint8_t *data);
   mesh::Packet* createSelfAdvert();

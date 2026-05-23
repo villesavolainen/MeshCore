@@ -1,5 +1,9 @@
 #include "MyMesh.h"
 
+#if USE_EXTERNAL_MCU_ROOM_STORAGE && defined(ESP32)
+  #include <HardwareSerial.h>
+#endif
+
 #define REPLY_DELAY_MILLIS          1500
 #define PUSH_NOTIFY_DELAY_MILLIS    2000
 #define SYNC_PUSH_INTERVAL          1200
@@ -21,6 +25,12 @@
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
 
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  #ifndef ROOM_STORAGE_UART
+    #define ROOM_STORAGE_UART Serial2
+  #endif
+#endif
+
 struct ServerStats {
   uint16_t batt_milli_volts;
   uint16_t curr_tx_queue_len;
@@ -38,12 +48,31 @@ struct ServerStats {
   uint16_t n_posted, n_post_push;
 };
 
+static uint16_t clampResendLimit(uint16_t value) {
+  if (value == 0) return 1;
+  if (value > ROOM_RESEND_MAX_LIMIT) return ROOM_RESEND_MAX_LIMIT;
+  return value;
+}
+
 void MyMesh::addPost(ClientInfo *client, const char *postData) {
   // TODO: suggested postData format: <title>/<descrption>
+  uint32_t post_id = getRTCClock()->getCurrentTimeUnique();
+  posts[next_post_idx].post_id = post_id;
   posts[next_post_idx].author = client->id; // add to cyclic queue
-  StrHelper::strncpy(posts[next_post_idx].text, postData, MAX_POST_TEXT_LEN);
+  StrHelper::strncpy(posts[next_post_idx].text, postData, sizeof(posts[next_post_idx].text));
 
-  posts[next_post_idx].post_timestamp = getRTCClock()->getCurrentTimeUnique();
+  posts[next_post_idx].post_timestamp = post_id;
+
+  RoomPost room_post = {};
+  room_post.post_id = post_id;
+  room_post.author = client->id;
+  room_post.post_timestamp = post_id;
+  StrHelper::strncpy(room_post.text, postData, sizeof(room_post.text));
+  _local_storage.appendPost(room_post);
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  _external_storage.appendPost(room_post);
+#endif
+
   next_post_idx = (next_post_idx + 1) % MAX_UNSYNCED_POSTS;
 
   next_push = futureMillis(PUSH_NOTIFY_DELAY_MILLIS);
@@ -87,6 +116,227 @@ void MyMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
   } else {
     client->extra.room.pending_ack = 0;
     MESH_DEBUG_PRINTLN("Unable to push post to client");
+  }
+}
+
+void MyMesh::sendHistoryPostToClient(ClientInfo* client, const RoomPost& post, unsigned long delay_millis) {
+  int len = 0;
+  memcpy(&reply_data[len], &post.post_timestamp, 4);
+  len += 4;
+
+  reply_data[len++] = (TXT_TYPE_SIGNED_PLAIN << 2);
+
+  memcpy(&reply_data[len], post.author.pub_key, 4);
+  len += 4;
+
+  int text_len = strlen(post.text);
+  memcpy(&reply_data[len], post.text, text_len);
+  len += text_len;
+
+  auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, len);
+  if (!reply) return;
+
+  if (client->out_path_len == OUT_PATH_UNKNOWN) {
+    sendFloodScoped(default_scope, reply, delay_millis, _prefs.path_hash_mode + 1);
+  } else {
+    sendDirect(reply, client->out_path, client->out_path_len, delay_millis);
+  }
+}
+
+void MyMesh::sendTextToClient(ClientInfo* client, const char* text, unsigned long delay_millis) {
+  RoomPost msg = {};
+  msg.post_id = getRTCClock()->getCurrentTimeUnique();
+  msg.author = mesh::Identity(self_id.pub_key);
+  msg.post_timestamp = msg.post_id;
+  StrHelper::strncpy(msg.text, text, sizeof(msg.text));
+  sendHistoryPostToClient(client, msg, delay_millis);
+}
+
+bool MyMesh::enqueueHistoryText(uint8_t client_idx, const char* text) {
+  uint8_t next = (uint8_t)(_history_tx_tail + 1) % (sizeof(_history_tx_queue) / sizeof(_history_tx_queue[0]));
+  if (next == _history_tx_head) {
+    return false;
+  }
+  auto& slot = _history_tx_queue[_history_tx_tail];
+  memset(&slot, 0, sizeof(slot));
+  slot.is_post = false;
+  slot.client_idx = client_idx;
+  slot.post_timestamp = getRTCClock()->getCurrentTimeUnique();
+  slot.author = mesh::Identity(self_id.pub_key);
+  StrHelper::strncpy(slot.text, text, sizeof(slot.text));
+  _history_tx_tail = next;
+  return true;
+}
+
+bool MyMesh::enqueueHistoryPost(uint8_t client_idx, const RoomPost& post) {
+  uint8_t next = (uint8_t)(_history_tx_tail + 1) % (sizeof(_history_tx_queue) / sizeof(_history_tx_queue[0]));
+  if (next == _history_tx_head) {
+    return false;
+  }
+  auto& slot = _history_tx_queue[_history_tx_tail];
+  memset(&slot, 0, sizeof(slot));
+  slot.is_post = true;
+  slot.client_idx = client_idx;
+  slot.post_timestamp = post.post_timestamp;
+  slot.author = post.author;
+  StrHelper::strncpy(slot.text, post.text, sizeof(slot.text));
+  _history_tx_tail = next;
+  return true;
+}
+
+bool MyMesh::isCommandCooldownActive(uint8_t client_idx) const {
+  if (client_idx >= MAX_CLIENTS) return true;
+  if (_command_cooldown_until[client_idx] == 0) return false;
+  return !millisHasNowPassed(_command_cooldown_until[client_idx]);
+}
+
+uint32_t MyMesh::getClientHash(const ClientInfo* client) const {
+  uint32_t h = 0;
+  memcpy(&h, client->id.pub_key, 4);
+  return h;
+}
+
+bool MyMesh::isServerTimeValid() const {
+  return getRTCClock()->getCurrentTime() > 1700000000UL;
+}
+
+uint16_t MyMesh::nextStorageSeq() {
+  _next_storage_seq++;
+  if (_next_storage_seq == 0) {
+    _next_storage_seq = 1;
+  }
+  return _next_storage_seq;
+}
+
+bool MyMesh::submitHistoryQuery(uint8_t client_idx, const ParsedRoomCommand& cmd) {
+  RoomStorage* storage = &_local_storage;
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  if (_external_storage.isAvailable()) {
+    storage = &_external_storage;
+  }
+#endif
+
+  const uint16_t seq = nextStorageSeq();
+  switch (cmd.type) {
+    case ROOM_CMD_LAST:
+      return storage->getLast(seq, client_idx, clampResendLimit(cmd.limit));
+    case ROOM_CMD_AFTER:
+      return storage->getAfterId(seq, client_idx, cmd.post_id, ROOM_RESEND_MAX_LIMIT);
+    case ROOM_CMD_SINCE:
+      return storage->getSince(seq, client_idx, cmd.since_timestamp, ROOM_RESEND_MAX_LIMIT);
+    default:
+      return false;
+  }
+}
+
+bool MyMesh::handleRoomCommand(ClientInfo* client, uint8_t client_idx, const char* text) {
+  ParsedRoomCommand cmd = ChatCommandParser::parse(text, ROOM_RESEND_MAX_LIMIT);
+  if (!cmd.is_command) {
+    return false;
+  }
+
+  if (isCommandCooldownActive(client_idx)) {
+    enqueueHistoryText(client_idx, "Cooldown active. Please wait before resend.");
+    return true;
+  }
+
+  _command_cooldown_until[client_idx] = futureMillis(ROOM_RESEND_COOLDOWN_MS);
+
+  if (!cmd.valid) {
+    enqueueHistoryText(client_idx, cmd.error[0] ? cmd.error : "Invalid command");
+    return true;
+  }
+
+  if (cmd.type == ROOM_CMD_HELP) {
+    enqueueHistoryText(client_idx, "Commands: !help, !resend last <n>, !resend after <post_id>, !resend since <ISO8601Z>");
+    enqueueHistoryText(client_idx, "Also accepted: .help .last .after .since");
+    return true;
+  }
+
+  if (cmd.type == ROOM_CMD_SINCE && !isServerTimeValid()) {
+    enqueueHistoryText(client_idx, "Server clock not valid. 'since' is unavailable right now.");
+    return true;
+  }
+
+  if (!submitHistoryQuery(client_idx, cmd)) {
+    enqueueHistoryText(client_idx, "History storage unavailable, trying local fallback.");
+
+    const uint16_t seq = nextStorageSeq();
+    bool ok = false;
+    if (cmd.type == ROOM_CMD_LAST) {
+      ok = _local_storage.getLast(seq, client_idx, clampResendLimit(cmd.limit));
+    } else if (cmd.type == ROOM_CMD_AFTER) {
+      ok = _local_storage.getAfterId(seq, client_idx, cmd.post_id, ROOM_RESEND_MAX_LIMIT);
+    } else if (cmd.type == ROOM_CMD_SINCE) {
+      ok = _local_storage.getSince(seq, client_idx, cmd.since_timestamp, ROOM_RESEND_MAX_LIMIT);
+    }
+    if (!ok) {
+      enqueueHistoryText(client_idx, "Unable to queue history query.");
+    }
+  }
+
+  uint32_t seen_id = (cmd.type == ROOM_CMD_AFTER) ? cmd.post_id : 0;
+  _local_storage.markClientSeen(getClientHash(client), seen_id);
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  _external_storage.markClientSeen(getClientHash(client), seen_id);
+#endif
+  return true;
+}
+
+void MyMesh::processStorageResults(RoomStorage& storage, bool from_external) {
+  RoomStorageQueryResult result;
+  while (storage.pollQueryResult(result)) {
+    if (result.post_count > 0) {
+      for (uint8_t i = 0; i < result.post_count; ++i) {
+        enqueueHistoryPost(result.client_idx, result.posts[i]);
+      }
+    }
+
+    if (result.done) {
+      if (result.code == ROOM_STORAGE_HISTORY_GAP) {
+        enqueueHistoryText(result.client_idx, "History gap: older posts are no longer available.");
+      } else if (result.code == ROOM_STORAGE_CRC_ERROR) {
+        enqueueHistoryText(result.client_idx, "Storage CRC error. Try again.");
+      } else if (result.code == ROOM_STORAGE_BUSY) {
+        enqueueHistoryText(result.client_idx, "Storage busy. Please retry in a moment.");
+      } else if (result.code == ROOM_STORAGE_UNAVAILABLE) {
+        if (from_external) {
+          enqueueHistoryText(result.client_idx, "External storage offline, serving local history only.");
+        }
+      } else if (result.code == ROOM_STORAGE_OK && result.post_count == 0) {
+        enqueueHistoryText(result.client_idx, "No matching history.");
+      }
+    }
+  }
+}
+
+void MyMesh::flushHistorySendQueue() {
+  uint8_t sent = 0;
+  const uint8_t queue_size = sizeof(_history_tx_queue) / sizeof(_history_tx_queue[0]);
+  while (_history_tx_head != _history_tx_tail && sent < ROOM_MAX_HISTORY_SEND_PER_LOOP) {
+    auto item = _history_tx_queue[_history_tx_head];
+    _history_tx_head = (uint8_t)(_history_tx_head + 1) % queue_size;
+
+    if (item.client_idx >= (uint8_t)acl.getNumClients()) {
+      continue;
+    }
+
+    auto client = acl.getClientByIdx(item.client_idx);
+    if (item.is_post) {
+      RoomPost post = {};
+      post.post_id = item.post_timestamp;
+      post.post_timestamp = item.post_timestamp;
+      post.author = item.author;
+      StrHelper::strncpy(post.text, item.text, sizeof(post.text));
+      sendHistoryPostToClient(client, post, 0);
+      _local_storage.markClientSeen(getClientHash(client), post.post_id);
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+      _external_storage.markClientSeen(getClientHash(client), post.post_id);
+#endif
+    } else {
+      sendTextToClient(client, item.text, 0);
+    }
+    sent++;
   }
 }
 
@@ -464,7 +714,9 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
           send_ack = false; // no ACK
         } else {
           if (!is_retry) {
-            addPost(client, (const char *)&data[5]);
+            if (!handleRoomCommand(client, i, (const char *)&data[5])) {
+              addPost(client, (const char *)&data[5]);
+            }
           }
           temp[5] = 0; // no reply (ACK is enough)
           send_ack = true;
@@ -615,6 +867,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
       region_map(key_store), temp_map(key_store),
       _cli(board, rtc, sensors, region_map, acl, &_prefs, this),
       telemetry(MAX_PACKET_PAYLOAD - 4)
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  , _external_storage(ROOM_STORAGE_UART)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -658,6 +913,11 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_push = 0;
   memset(posts, 0, sizeof(posts));
   _num_posted = _num_post_pushes = 0;
+  _history_tx_head = 0;
+  _history_tx_tail = 0;
+  memset(_history_tx_queue, 0, sizeof(_history_tx_queue));
+  memset(_command_cooldown_until, 0, sizeof(_command_cooldown_until));
+  _next_storage_seq = 1;
 
   memset(default_scope.key, 0, sizeof(default_scope.key));
 }
@@ -665,6 +925,16 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 void MyMesh::begin(FILESYSTEM *fs) {
   mesh::Mesh::begin();
   _fs = fs;
+  _local_storage.begin();
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  #if defined(ESP32)
+    #if defined(ROOM_STORAGE_UART_RX) && defined(ROOM_STORAGE_UART_TX)
+      ((HardwareSerial*)&ROOM_STORAGE_UART)->setPins(ROOM_STORAGE_UART_RX, ROOM_STORAGE_UART_TX);
+    #endif
+    ((HardwareSerial*)&ROOM_STORAGE_UART)->begin(115200);
+  #endif
+  _external_storage.begin();
+#endif
   // load persisted prefs
   _cli.loadPrefs(_fs);
 
@@ -939,6 +1209,14 @@ bool MyMesh::saveFilter(ClientInfo* client) {
 
 void MyMesh::loop() {
   mesh::Mesh::loop();
+
+  _local_storage.loop();
+  processStorageResults(_local_storage, false);
+#if USE_EXTERNAL_MCU_ROOM_STORAGE
+  _external_storage.loop();
+  processStorageResults(_external_storage, true);
+#endif
+  flushHistorySendQueue();
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {
     // check for ACK timeouts
