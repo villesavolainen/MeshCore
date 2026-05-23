@@ -1,0 +1,79 @@
+name: Branch Image CI
+
+on:
+  push:
+    branches:
+      - room-ext-persistent-storage
+    paths:
+      - src/**
+      - examples/**
+      - variants/**
+      - platformio.ini
+      - .github/workflows/branch-image-ci.yml
+      - .github/actions/setup-build-environment/**
+  pull_request:
+    branches:
+      - room-ext-persistent-storage
+    paths:
+      - src/**
+      - examples/**
+      - variants/**
+      - platformio.ini
+      - .github/workflows/branch-image-ci.yml
+      - .github/actions/setup-build-environment/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env_name: Heltec_v2_room_server
+            artifact_name: heltec-v2-room-server-default
+          - env_name: Heltec_v2_room_server_external_storage_ci
+            artifact_name: heltec-v2-room-server-external-storage
+
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Create external-storage CI environment
+        run: |
+          cat >> variants/heltec_v2/platformio.ini <<'EOF'
+          [env:Heltec_v2_room_server_external_storage_ci]
+          extends = Heltec_v2_room_server
+          build_flags =
+            ${Heltec_v2_room_server.build_flags}
+            -D USE_EXTERNAL_MCU_ROOM_STORAGE=1
+            -D ROOM_STORAGE_UART=Serial2
+            -D ROOM_STORAGE_UART_RX=5
+            -D ROOM_STORAGE_UART_TX=17
+            -D ROOM_RESEND_MAX_LIMIT=25
+            -D ROOM_RESEND_COOLDOWN_MS=8000
+            -D ROOM_MAX_HISTORY_SEND_PER_LOOP=2
+          EOF
+
+      - name: Build ${{ matrix.env_name }} image
+        run: |
+          pio run -e ${{ matrix.env_name }}
+          pio run -e ${{ matrix.env_name }} -t mergebin
+
+      - name: Collect image files
+        run: |
+          mkdir -p artifacts/${{ matrix.artifact_name }}
+          cp .pio/build/${{ matrix.env_name }}/firmware.bin artifacts/${{ matrix.artifact_name }}/
+          cp .pio/build/${{ matrix.env_name }}/firmware-merged.bin artifacts/${{ matrix.artifact_name }}/
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: artifacts/${{ matrix.artifact_name }}

@@ -1,0 +1,75 @@
+name: Branch Image CD Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_family:
+        description: Firmware family to package
+        required: true
+        default: room-server
+        type: choice
+        options:
+          - room-server
+          - repeater
+          - companion
+          - all
+      disable_debug:
+        description: Disable debug build flags
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  package-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build selected firmware image pack
+        env:
+          FIRMWARE_VERSION: branch-${{ github.sha }}
+        run: |
+          if [ "${{ inputs.disable_debug }}" = "true" ]; then
+            export DISABLE_DEBUG=1
+          else
+            export DISABLE_DEBUG=0
+          fi
+
+          case "${{ inputs.firmware_family }}" in
+            room-server)
+              /usr/bin/env bash build.sh build-room-server-firmwares
+              ;;
+            repeater)
+              /usr/bin/env bash build.sh build-repeater-firmwares
+              ;;
+            companion)
+              /usr/bin/env bash build.sh build-companion-firmwares
+              ;;
+            all)
+              /usr/bin/env bash build.sh build-firmwares
+              ;;
+            *)
+              echo "Unsupported firmware_family: ${{ inputs.firmware_family }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Build artifact archive
+        run: |
+          mkdir -p artifacts
+          ARCHIVE_NAME="${{ inputs.firmware_family }}-images-${{ github.run_number }}-${{ github.sha }}.tar.gz"
+          tar -czf "artifacts/${ARCHIVE_NAME}" -C out .
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.firmware_family }}-images-pack
+          path: artifacts/*.tar.gz
