@@ -1,6 +1,9 @@
 name: Branch Image CD Pack
 
 on:
+  push:
+    tags:
+      - 'room-ext-persistent-storage-*'
   workflow_dispatch:
     inputs:
       firmware_family:
@@ -20,7 +23,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package-images:
@@ -37,13 +40,32 @@ jobs:
         env:
           FIRMWARE_VERSION: branch-${{ github.sha }}
         run: |
-          if [ "${{ inputs.disable_debug }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUILD_FAMILY="${{ inputs.firmware_family }}"
+            BUILD_DISABLE_DEBUG="${{ inputs.disable_debug }}"
+          else
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            if echo "${TAG_NAME}" | grep -qi "room-server"; then
+              BUILD_FAMILY="room-server"
+            elif echo "${TAG_NAME}" | grep -qi "repeater"; then
+              BUILD_FAMILY="repeater"
+            elif echo "${TAG_NAME}" | grep -qi "companion"; then
+              BUILD_FAMILY="companion"
+            else
+              BUILD_FAMILY="all"
+            fi
+            BUILD_DISABLE_DEBUG="true"
+          fi
+
+          echo "Building family: ${BUILD_FAMILY}"
+
+          if [ "${BUILD_DISABLE_DEBUG}" = "true" ]; then
             export DISABLE_DEBUG=1
           else
             export DISABLE_DEBUG=0
           fi
 
-          case "${{ inputs.firmware_family }}" in
+          case "${BUILD_FAMILY}" in
             room-server)
               /usr/bin/env bash build.sh build-room-server-firmwares
               ;;
@@ -57,7 +79,7 @@ jobs:
               /usr/bin/env bash build.sh build-firmwares
               ;;
             *)
-              echo "Unsupported firmware_family: ${{ inputs.firmware_family }}"
+              echo "Unsupported firmware_family: ${BUILD_FAMILY}"
               exit 1
               ;;
           esac
@@ -65,11 +87,25 @@ jobs:
       - name: Build artifact archive
         run: |
           mkdir -p artifacts
-          ARCHIVE_NAME="${{ inputs.firmware_family }}-images-${{ github.run_number }}-${{ github.sha }}.tar.gz"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARCHIVE_FAMILY="${{ inputs.firmware_family }}"
+          else
+            ARCHIVE_FAMILY="tag"
+          fi
+          ARCHIVE_NAME="${ARCHIVE_FAMILY}-images-${{ github.run_number }}-${{ github.sha }}.tar.gz"
           tar -czf "artifacts/${ARCHIVE_NAME}" -C out .
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.firmware_family }}-images-pack
+          name: branch-images-pack
           path: artifacts/*.tar.gz
+
+      - name: Create draft release for branch tag
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/room-ext-persistent-storage-')
+        with:
+          name: Branch Images ${{ github.ref_name }}
+          body: "Automated branch image package from workflow run ${{ github.run_number }}."
+          draft: true
+          files: artifacts/*.tar.gz
