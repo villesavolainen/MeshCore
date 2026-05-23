@@ -3,7 +3,7 @@
 #if USE_EXTERNAL_MCU_ROOM_STORAGE
 
 #include <HardwareSerial.h>
-#include <helpers/StrHelper.h>
+#include <helpers/TxtDataHelpers.h>
 
 #ifndef EXTERNAL_ROOM_STORAGE_UART_TIMEOUT_MS
   #define EXTERNAL_ROOM_STORAGE_UART_TIMEOUT_MS 350
