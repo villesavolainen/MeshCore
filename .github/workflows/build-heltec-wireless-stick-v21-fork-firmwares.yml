@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - heltec-wireless-stick-v2.1
+      - copilot/heltec-wireless-stick-v21
 
 concurrency:
   group: heltec-wireless-stick-v21-fork-${{ github.ref }}
