@@ -9,6 +9,7 @@ on:
     branches:
       - heltec-wireless-stick-v2.1
       - copilot/heltec-wireless-stick-v21
+      - copilot/broken-rollback-all-changes
 
 concurrency:
   group: heltec-wireless-stick-v21-fork-${{ github.ref }}
